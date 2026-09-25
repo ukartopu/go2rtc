@@ -1,0 +1,39 @@
+# Panovera fork: binaries for the psim deployment targets on v*-panovera.* tags.
+# Upstream build.yml is removed on this branch: on our tags it would publish
+# docker images to ghcr.io/ukartopu.
+name: Panovera release
+
+on:
+  push:
+    tags:
+      - 'v*-panovera.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env: { CGO_ENABLED: 0 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - name: Build
+        run: |
+          set -eu
+          # Output outside the checkout: an untracked dir would mark the
+          # build vcs.modified=true and break reproducibility with
+          # psim's scripts/build-go2rtc.sh.
+          OUT="$RUNNER_TEMP/dist"; mkdir -p "$OUT"
+          for t in darwin/arm64 linux/amd64 linux/arm64; do
+            GOOS=${t%/*} GOARCH=${t#*/} go build -trimpath -ldflags "-s -w" -o "$OUT/go2rtc_${t%/*}_${t#*/}" .
+          done
+          cd "$OUT" && sha256sum go2rtc_* > SHA256SUMS && cat SHA256SUMS
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+      - name: Release
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$OUT"/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes "go2rtc 1.9.14 + #scale= / #retime=1 (Panovera). Verify with SHA256SUMS."
