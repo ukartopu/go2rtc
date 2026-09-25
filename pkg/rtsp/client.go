@@ -385,6 +385,19 @@ func (c *Conn) SetupMedia(media *core.Media) (byte, error) {
 
 func (c *Conn) Play() (err error) {
 	req := &tcp.Request{Method: MethodPlay, URL: c.URL}
+	// RFC 2326 12.34: playback speed for recorded sources (ex. NVR playback).
+	// Only a plain number is sent, so the value can't inject headers.
+	if c.Scale != "" {
+		k, err := strconv.ParseFloat(c.Scale, 64)
+		if err != nil || k <= 0 {
+			return fmt.Errorf("rtsp: wrong scale: %q", c.Scale)
+		}
+		req.Header = map[string][]string{"Scale": {c.Scale}}
+		if c.Retime && k != 1 {
+			c.retimeK = k
+			c.retimers = map[byte]*retimer{}
+		}
+	}
 	return c.WriteRequest(req)
 }
 

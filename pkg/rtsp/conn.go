@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"strconv"
@@ -27,6 +28,8 @@ type Conn struct {
 	Media       string
 	OnClose     func() error
 	PacketSize  uint16
+	Scale       string // PLAY Scale header (playback speed), ex. "4"
+	Retime      bool   // with Scale: divide RTP timestamp deltas by the scale
 	SessionName string
 	Timeout     int
 	Transport   string // custom transport support, ex. RTSP over WebSocket
@@ -51,6 +54,9 @@ type Conn struct {
 
 	udpConn []*net.UDPConn
 	udpAddr []*net.UDPAddr
+
+	retimeK  float64
+	retimers map[byte]*retimer
 }
 
 const (
@@ -293,6 +299,15 @@ func (c *Conn) handleRawPacket(channel byte, buf []byte) error {
 			return err
 		}
 
+		if c.retimeK > 0 {
+			r := c.retimers[channel]
+			if r == nil {
+				r = &retimer{}
+				c.retimers[channel] = r
+			}
+			packet.Timestamp = r.next(packet.Timestamp, c.retimeK)
+		}
+
 		for _, receiver := range c.Receivers {
 			if receiver.ID == channel {
 				receiver.WriteRTP(packet)
@@ -406,4 +421,27 @@ func (c *Conn) ReadResponse() (*tcp.Response, error) {
 		return nil, err
 	}
 	return tcp.ReadResponse(c.reader)
+}
+
+// retimer maps source RTP timestamps, which advance Scale times faster
+// than wall clock during fast playback, back to wall-clock pace. At high
+// speeds (ex. 16x) this markedly reduces freezes in browsers.
+// Incremental and wrap-safe: only int32 deltas are used.
+type retimer struct {
+	init    bool
+	in, out uint32
+	frac    float64
+}
+
+func (r *retimer) next(ts uint32, k float64) uint32 {
+	if !r.init {
+		r.init, r.in, r.out = true, ts, ts
+		return ts
+	}
+	d := float64(int32(ts-r.in))/k + r.frac
+	step := math.Floor(d)
+	r.frac = d - step
+	r.in = ts
+	r.out += uint32(int32(step))
+	return r.out
 }
